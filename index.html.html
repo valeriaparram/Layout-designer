@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Layout Designer – Grid & Drag (m/cm)</title>
+  <!-- Tailwind Play CDN for quick styling -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React & ReactDOM -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <!-- Babel for in-browser JSX transform -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    html, body, #root { height: 100%; }
+    kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useEffect, useMemo, useRef, useState } = React;
+
+    // Utils
+    const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+    const uid = () => Math.random().toString(36).slice(2, 9);
+
+    const DEFAULT_SCALE_PX_PER_M = 120;
+    const DEFAULT_GRID_STEP_M = 0.1;
+
+    const UNIT_META = {
+      m: { label: "m", toBase: (v) => v, fromBase: (v) => v },
+      cm: { label: "cm", toBase: (v) => v / 100, fromBase: (v) => v * 100 },
+    };
+
+    const SHAPE_TYPES = { rect: { label: "Rectangle" }, circle: { label: "Circle" } };
+
+    function Section({ title, children }) {
+      return (
+        <div className="mb-4 p-3 rounded-2xl border bg-white shadow-sm">
+          <div className="font-semibold text-gray-800">{title}</div>
+          <div className="mt-3">{children}</div>
+        </div>
+      );
+    }
+
+    function formatLen(v) {
+      const isIntish = Math.abs(v - Math.round(v)) < 1e-6;
+      return isIntish ? String(Math.round(v)) : v.toFixed(2);
+    }
+
+    function Shape({ shape, selected, unitLabel, sizePxToUnit, onMouseDown }) {
+      const { type, x, y, w, h, fill, opacity, label } = shape;
+      const dimsText = \`\${formatLen(sizePxToUnit(w))} \${unitLabel} × \${formatLen(sizePxToUnit(h))} \${unitLabel}\`;
+
+      if (type === "rect") {
+        return (
+          <div
+            className={\`absolute group select-none \${selected ? "ring-2 ring-indigo-500" : "ring-1 ring-gray-300"}\`}
+            style={{ left: x, top: y, width: w, height: h, backgroundColor: fill, opacity, borderRadius: 8 }}
+            onMouseDown={(e) => onMouseDown(e, "move")}
+          >
+            <div className="absolute -top-7 left-0 px-2 py-0.5 text-xs rounded-md bg-white/90 border shadow">
+              <div className="font-medium">{label}</div>
+              <div className="text-[10px] text-gray-600">{dimsText}</div>
+            </div>
+            <div
+              className="absolute -bottom-2 -right-2 h-4 w-4 rounded-full bg-white border shadow cursor-nwse-resize opacity-0 group-hover:opacity-100"
+              onMouseDown={(e) => onMouseDown(e, "resize")}
+              title="Redimensionar"
+            />
+          </div>
+        );
+      }
+      if (type === "circle") {
+        const size = Math.min(w, h);
+        return (
+          <div
+            className={\`absolute group select-none \${selected ? "ring-2 ring-indigo-500" : "ring-1 ring-gray-300"}\`}
+            style={{ left: x, top: y, width: size, height: size, backgroundColor: fill, opacity, borderRadius: "9999px" }}
+            onMouseDown={(e) => onMouseDown(e, "move")}
+          >
+            <div className="absolute -top-7 left-0 px-2 py-0.5 text-xs rounded-md bg-white/90 border shadow">
+              <div className="font-medium">{label}</div>
+              <div className="text-[10px] text-gray-600">Ø {formatLen(sizePxToUnit(size))} {unitLabel}</div>
+            </div>
+            <div
+              className="absolute -bottom-2 -right-2 h-4 w-4 rounded-full bg-white border shadow cursor-nwse-resize opacity-0 group-hover:opacity-100"
+              onMouseDown={(e) => onMouseDown(e, "resize")}
+              title="Redimensionar"
+            />
+          </div>
+        );
+      }
+      return null;
+    }
+
+    function App() {
+      const [unit, setUnit] = useState("m");
+      const [scalePxPerM, setScalePxPerM] = useState(DEFAULT_SCALE_PX_PER_M);
+      const [gridStepM, setGridStepM] = useState(DEFAULT_GRID_STEP_M);
+      const [snap, setSnap] = useState(true);
+
+      const [shapes, setShapes] = useState([]);
+      const [selectedId, setSelectedId] = useState(null);
+
+      const [pan, setPan] = useState({ x: 0, y: 0 });
+      const panRef = useRef(pan);
+      useEffect(() => { panRef.current = pan; }, [pan]);
+
+      const canvasRef = useRef(null);
+
+      const unitLabel = UNIT_META[unit].label;
+      const unitToMeters = UNIT_META[unit].toBase;
+      const metersToUnit = UNIT_META[unit].fromBase;
+
+      const gridStepInPx = gridStepM * scalePxPerM;
+
+      const sizeUnitToPx = (valInUnit) => unitToMeters(valInUnit) * scalePxPerM;
+      const sizePxToUnit = (px) => metersToUnit(px / scalePxPerM);
+      const snapPx = (px) => (snap ? Math.round(px / gridStepInPx) * gridStepInPx : px);
+
+      const addShape = (type) => {
+        const id = uid();
+        const baseWUnit = unit === "m" ? 1 : 100;
+        const baseHUnit = unit === "m" ? 0.6 : 60;
+        const newShape = {
+          id, type, x: 100, y: 100,
+          w: sizeUnitToPx(baseWUnit), h: sizeUnitToPx(baseHUnit),
+          fill: "#4f46e5", opacity: 0.85,
+          label: type === "rect" ? "Mesa" : "Pilar", rotation: 0
+        };
+        setShapes((s) => [...s, newShape]); setSelectedId(id);
+      };
+
+      const updateShape = (id, patch) => setShapes((s) => s.map((sh) => (sh.id === id ? { ...sh, ...patch } : sh)));
+      const deleteSelected = () => { if (!selectedId) return; setShapes((s) => s.filter((sh) => sh.id !== selectedId)); setSelectedId(null); };
+
+      const dragState = useRef({ dragging: false, id: null, offsetX: 0, offsetY: 0, mode: "move" });
+
+      const onMouseDownShape = (e, id, mode = "move") => {
+        e.stopPropagation();
+        const canvas = canvasRef.current;
+        const rect = canvas.getBoundingClientRect();
+        const sh = shapes.find((s) => s.id === id);
+        const mouseX = e.clientX - rect.left - pan.x;
+        const mouseY = e.clientY - rect.top - pan.y;
+        dragState.current = { dragging: true, id, mode, offsetX: mouseX - sh.x, offsetY: mouseY - sh.y };
+        setSelectedId(id);
+      };
+
+      const onMouseDownCanvas = (e) => {
+        if (e.button === 1 || (e.button === 0 && e.shiftKey)) {
+          const canvas = canvasRef.current;
+          const rect = canvas.getBoundingClientRect();
+          const start = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+          const startPan = { ...panRef.current };
+          const onMove = (ev) => setPan({ x: startPan.x + (ev.clientX - rect.left - start.x), y: startPan.y + (ev.clientY - rect.top - start.y) });
+          const onUp = () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+          window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
+          return;
+        }
+        setSelectedId(null);
+      };
+
+      useEffect(() => {
+        const onMove = (e) => {
+          if (!dragState.current.dragging) return;
+          const canvas = canvasRef.current;
+          const rect = canvas.getBoundingClientRect();
+          const mouseX = e.clientX - rect.left - panRef.current.x;
+          const mouseY = e.clientY - rect.top - panRef.current.y;
+          const { id, offsetX, offsetY, mode } = dragState.current;
+          setShapes((prev) => prev.map((sh) => {
+            if (sh.id !== id) return sh;
+            if (mode === "move") {
+              const nx = snapPx(mouseX - offsetX);
+              const ny = snapPx(mouseY - offsetY);
+              return { ...sh, x: nx, y: ny };
+            } else if (mode === "resize") {
+              const nw = clamp(snapPx(mouseX - sh.x), 10, 5000);
+              const nh = clamp(snapPx(mouseY - sh.y), 10, 5000);
+              return { ...sh, w: nw, h: nh };
+            }
+            return sh;
+          }));
+        };
+        const onUp = () => { dragState.current.dragging = false; dragState.current.id = null; };
+        window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
+        return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+      }, [gridStepInPx]);
+
+      const gridBackground = useMemo(() => {
+        const s = gridStepInPx; const big = s * 5;
+        return {
+          backgroundImage: \`
+            linear-gradient(to right, rgba(0,0,0,0.08) 1px, transparent 1px),
+            linear-gradient(to bottom, rgba(0,0,0,0.08) 1px, transparent 1px),
+            linear-gradient(to right, rgba(0,0,0,0.18) 1px, transparent 1px),
+            linear-gradient(to bottom, rgba(0,0,0,0.18) 1px, transparent 1px)
+          \`,
+          backgroundSize: \`\${s}px \${s}px, \${s}px \${s}px, \${big}px \${big}px, \${big}px \${big}px\`,
+          backgroundPosition: \`\${pan.x}px \${pan.y}px, \${pan.x}px \${pan.y}px, \${pan.x}px \${pan.y}px, \${pan.x}px \${pan.y}px\`,
+        };
+      }, [gridStepInPx, pan]);
+
+      const Ruler = ({ orientation }) => {
+        const isHorizontal = orientation === "horizontal";
+        const marks = [];
+        const stepM = gridStepM;
+        const pxPerStep = stepM * scalePxPerM;
+        for (let i = -50; i < 200; i++) {
+          const posPx = i * pxPerStep + (isHorizontal ? pan.x : pan.y);
+          marks.push({ posPx, labelM: i * stepM });
+        }
+        return (
+          <div className={\`\${isHorizontal ? "h-8 w-full" : "w-8 h-full"} relative bg-white/80 border-b border-r\`}>
+            {marks.map((m, idx) => (
+              <div key={idx} className="absolute text-[10px] text-gray-600"
+                   style={{ left: isHorizontal ? m.posPx : 0, top: isHorizontal ? 0 : m.posPx }}>
+                <div className={\`\${isHorizontal ? "h-3 w-px" : "w-3 h-px"} bg-gray-400\`} />
+                <div className="mt-0.5">{(Math.round(UNIT_META[unit].fromBase(m.labelM) * 1000)/1000)} {UNIT_META[unit].label}</div>
+              </div>
+            ))}
+          </div>
+        );
+      };
+
+      const selected = shapes.find((s) => s.id === selectedId) || null;
+
+      return (
+        <div className="h-screen w-full bg-gray-50 text-gray-900">
+          <div className="flex items-center justify-between px-4 py-3 border-b bg-white sticky top-0 z-10">
+            <div className="flex items-center gap-2">
+              <div className="text-lg font-semibold">Layout Designer</div>
+              <div className="text-xs text-gray-500">(arrastra, suelta y ajusta escala real)</div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button onClick={() => addShape("rect")} className="px-3 py-2 rounded-xl bg-gray-900 text-white hover:bg-black shadow">+ Rectángulo</button>
+              <button onClick={() => addShape("circle")} className="px-3 py-2 rounded-xl bg-gray-900 text-white hover:bg-black shadow">+ Círculo</button>
+              <div className="h-6 w-px bg-gray-200" />
+              <button onClick={() => {
+                const data = { unit, scalePxPerM, gridStepM, shapes };
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url; a.download = "layout.json"; a.click(); URL.revokeObjectURL(url);
+              }} className="px-3 py-2 rounded-xl bg-white border shadow-sm hover:bg-gray-50">Exportar JSON</button>
+              <label className="px-3 py-2 rounded-xl bg-white border shadow-sm hover:bg-gray-50 cursor-pointer">
+                Importar JSON
+                <input type="file" accept="application/json" className="hidden" onChange={(e) => {
+                  const file = e.target.files?.[0]; if (!file) return;
+                  const reader = new FileReader();
+                  reader.onload = () => {
+                    try {
+                      const data = JSON.parse(reader.result);
+                      if (data.scalePxPerM) setScalePxPerM(data.scalePxPerM);
+                      if (data.gridStepM) setGridStepM(data.gridStepM);
+                      if (data.unit) setUnit(data.unit);
+                      if (Array.isArray(data.shapes)) setShapes(data.shapes);
+                    } catch (e) { alert("Archivo no válido"); }
+                  };
+                  reader.readAsText(file);
+                }} />
+              </label>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-[280px_1fr] h-[calc(100vh-56px)]">
+            <div className="p-3 border-r bg-white overflow-y-auto">
+              <Section title="Unidades & Escala">
+                <div className="flex items-center gap-2">
+                  <label className={\`px-3 py-1 rounded-full border cursor-pointer \${unit === "m" ? "bg-gray-900 text-white" : "bg-white"}\`}>
+                    <input type="radio" name="unit" className="hidden" checked={unit === "m"} onChange={() => setUnit("m")} />
+                    Metros
+                  </label>
+                  <label className={\`px-3 py-1 rounded-full border cursor-pointer \${unit === "cm" ? "bg-gray-900 text-white" : "bg-white"}\`}>
+                    <input type="radio" name="unit" className="hidden" checked={unit === "cm"} onChange={() => setUnit("cm")} />
+                    Centímetros
+                  </label>
+                </div>
+                <div className="mt-3 text-sm">
+                  <label className="block text-gray-500">Escala (1 m = px)</label>
+                  <input type="number" className="mt-1 w-full rounded-xl border px-3 py-2" min={20} max={800}
+                         value={scalePxPerM}
+                         onChange={(e) => setScalePxPerM(clamp(Number(e.target.value), 10, 2000))} />
+                </div>
+                <div className="mt-3 text-sm">
+                  <label className="block text-gray-500">Cuadrícula cada</label>
+                  <div className="flex items-center gap-2">
+                    <input type="number" className="mt-1 w-24 rounded-xl border px-3 py-2"
+                           step={unit === "m" ? 0.1 : 1} min={unit === "m" ? 0.05 : 5}
+                           value={UNIT_META[unit].fromBase(gridStepM)}
+                           onChange={(e) => setGridStepM(UNIT_META[unit].toBase(Number(e.target.value)))} />
+                    <span className="text-gray-600">{UNIT_META[unit].label}</span>
+                  </div>
+                </div>
+                <div className="mt-3 flex items-center justify-between">
+                  <label className="text-sm text-gray-700">Ajustar a cuadrícula</label>
+                  <input type="checkbox" checked={snap} onChange={(e) => setSnap(e.target.checked)} />
+                </div>
+              </Section>
+
+              <Section title="Figura seleccionada">
+                {(() => {
+                  const selected = shapes.find((s) => s.id === selectedId);
+                  if (!selected) return <div className="text-sm text-gray-500">Selecciona una figura para editar sus propiedades.</div>;
+                  return (
+                    <div className="space-y-3 text-sm">
+                      <div className="flex items-center justify-between">
+                        <span className="text-gray-500">Tipo</span>
+                        <span className="font-medium">{SHAPE_TYPES[selected.type].label}</span>
+                      </div>
+                      <div>
+                        <label className="block text-gray-500">Etiqueta</label>
+                        <input className="mt-1 w-full rounded-xl border px-3 py-2"
+                               value={selected.label}
+                               onChange={(e) => setShapes((s) => s.map(sh => sh.id === selected.id ? { ...sh, label: e.target.value } : sh))} />
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="block text-gray-500">Ancho ({unitLabel})</label>
+                          <input type="number" className="mt-1 w-full rounded-xl border px-3 py-2"
+                                 min={unit === "m" ? 0.05 : 5} step={unit === "m" ? 0.05 : 1}
+                                 value={Number((UNIT_META[unit].fromBase(selected.w / scalePxPerM))).toFixed(unit === "m" ? 2 : 0)}
+                                 onChange={(e) => setShapes((s) => s.map(sh => sh.id === selected.id ? { ...sh, w: UNIT_META[unit].toBase(Number(e.target.value)) * scalePxPerM } : sh))} />
+                        </div>
+                        <div>
+                          <label className="block text-gray-500">Alto ({unitLabel})</label>
+                          <input type="number" className="mt-1 w-full rounded-xl border px-3 py-2"
+                                 min={unit === "m" ? 0.05 : 5} step={unit === "m" ? 0.05 : 1}
+                                 value={Number((UNIT_META[unit].fromBase(selected.h / scalePxPerM))).toFixed(unit === "m" ? 2 : 0)}
+                                 onChange={(e) => setShapes((s) => s.map(sh => sh.id === selected.id ? { ...sh, h: UNIT_META[unit].toBase(Number(e.target.value)) * scalePxPerM } : sh))} />
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="block text-gray-500">X ({unitLabel})</label>
+                          <input type="number" className="mt-1 w-full rounded-xl border px-3 py-2"
+                                 value={Number((UNIT_META[unit].fromBase(selected.x / scalePxPerM))).toFixed(unit === "m" ? 2 : 0)}
+                                 onChange={(e) => setShapes((s) => s.map(sh => sh.id === selected.id ? { ...sh, x: Math.round((UNIT_META[unit].toBase(Number(e.target.value)) * scalePxPerM) / (gridStepM * scalePxPerM)) * (gridStepM * scalePxPerM) } : sh))} />
+                        </div>
+                        <div>
+                          <label className="block text-gray-500">Y ({unitLabel})</label>
+                          <input type="number" className="mt-1 w-full rounded-xl border px-3 py-2"
+                                 value={Number((UNIT_META[unit].fromBase(selected.y / scalePxPerM))).toFixed(unit === "m" ? 2 : 0)}
+                                 onChange={(e) => setShapes((s) => s.map(sh => sh.id === selected.id ? { ...sh, y: Math.round((UNIT_META[unit].toBase(Number(e.target.value)) * scalePxPerM) / (gridStepM * scalePxPerM)) * (gridStepM * scalePxPerM) } : sh))} />
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 items-center">
+                        <div>
+                          <label className="block text-gray-500">Color</label>
+                          <input type="color" className="mt-1 h-10 w-full rounded-xl border"
+                                 value={selected.fill}
+                                 onChange={(e) => setShapes((s) => s.map(sh => sh.id === selected.id ? { ...sh, fill: e.target.value } : sh))} />
+                        </div>
+                        <div>
+                          <label className="block text-gray-500">Opacidad</label>
+                          <input type="range" min={0.2} max={1} step={0.05} className="mt-1 w-full"
+                                 value={selected.opacity}
+                                 onChange={(e) => setShapes((s) => s.map(sh => sh.id === selected.id ? { ...sh, opacity: Number(e.target.value) } : sh))} />
+                        </div>
+                      </div>
+                      <button onClick={deleteSelected} className="w-full mt-2 px-3 py-2 rounded-xl bg-red-50 text-red-700 border border-red-200 hover:bg-red-100">Eliminar figura</button>
+                    </div>
+                  );
+                })()}
+              </Section>
+
+              <Section title="Atajos útiles">
+                <ul className="text-sm text-gray-600 list-disc pl-5 space-y-1">
+                  <li><kbd className="px-1 border rounded">Shift + arrastrar</kbd> para desplazar el lienzo</li>
+                  <li>Activa "Ajustar a cuadrícula" para precisión al mover/redimensionar</li>
+                  <li>Exporta/Importa JSON para guardar/recuperar tus layouts</li>
+                </ul>
+              </Section>
+            </div>
+
+            <div className="relative overflow-hidden">
+              <div className="absolute left-8 right-0 top-0 z-10"><Ruler orientation="horizontal" /></div>
+              <div className="absolute top-8 bottom-0 left-0 z-10"><Ruler orientation="vertical" /></div>
+
+              <div ref={canvasRef} className="absolute inset-0" style={gridBackground} onMouseDown={onMouseDownCanvas}>
+                <div className="absolute" style={{ transform: \`translate(\${pan.x}px, \${pan.y}px)\` }}>
+                  {shapes.map((sh) => (
+                    <Shape key={sh.id} shape={sh} selected={selectedId === sh.id}
+                           unitLabel={unitLabel} sizePxToUnit={sizePxToUnit}
+                           onMouseDown={(e, mode) => onMouseDownShape(e, sh.id, mode)} />
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+  </script>
+</body>
+</html>
